@@ -83,3 +83,5 @@ out/
 
 # Built Visual Studio Code Extensions
 *.vsix
+downloaded_js
+get_otvet
