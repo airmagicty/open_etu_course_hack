@@ -2,7 +2,7 @@
 // @name         Open edX InVideoQuiz — Navigator PRO v3 (Control Panel)
 // @author       airmagicty
 // @namespace    https://example.local/
-// @version      3.0.0
+// @version      3.1.0
 // @description  Контролируемый перебор вариантов с панелью управления
 // @match        *://*/*
 // @grant        none
@@ -14,9 +14,8 @@
     const CONFIG = {
         panelId: 'quiz-audit-panel-pro',
         videoSearchTimeout: 5000,
-        pauseBeforeQuestion: true,
+        pauseBeforeQuestion: false,  // ← НЕ останавливаем видео
         seekOffset: 0,
-        // Порядок перебора: сначала индекс 1 (второй вариант), потом остальные
         bruteOrder: [1, 0, 2, 3, 4, 5, 6, 7, 8, 9]
     };
 
@@ -86,7 +85,6 @@
                 question: legend?.textContent.trim() || 'Без названия',
                 options,
                 element: problem,
-                // Храним состояние перебора для каждого вопроса
                 bruteState: {
                     isRunning: false,
                     currentIndex: 0,
@@ -106,12 +104,10 @@
         const order = [];
         const maxOptions = q.options.length;
         
-        // Сначала добавляем индекс 1 (второй вариант), если он существует
         if (maxOptions > 1) {
             order.push(1);
         }
         
-        // Затем все остальные по порядку, кроме уже добавленного
         for (let i = 0; i < maxOptions; i++) {
             if (!order.includes(i)) {
                 order.push(i);
@@ -222,7 +218,7 @@
 
     /**
      * ---------------------------------------------------------
-     * 8. Перемотка видео
+     * 8. Перемотка видео (без остановки)
      * ---------------------------------------------------------
      */
 
@@ -268,7 +264,6 @@
         const inputs = problem.querySelectorAll('input[type="radio"]');
         if (inputs[optionIndex]) {
             inputs[optionIndex].checked = true;
-            // Триггерим события для XBlock
             inputs[optionIndex].dispatchEvent(new Event('change', { bubbles: true }));
             inputs[optionIndex].dispatchEvent(new Event('click', { bubbles: true }));
             return true;
@@ -298,14 +293,12 @@
      */
 
     function checkResult(problem) {
-        // Проверяем наличие классов правильности
         const correct = problem.querySelector('.status.correct, .correct, .is-correct');
         const incorrect = problem.querySelector('.status.incorrect, .incorrect, .is-incorrect');
         
         if (correct) return 'correct';
         if (incorrect) return 'incorrect';
         
-        // Проверяем текст
         const feedback = problem.querySelector('.submission-feedback, .notification');
         if (feedback) {
             const text = feedback.textContent.toLowerCase();
@@ -332,7 +325,6 @@
         problem.classList.remove('quiz-navigator-correct');
         problem.classList.remove('quiz-navigator-incorrect');
         
-        // Удаляем метки
         const labels = problem.querySelectorAll('.quiz-navigator-label');
         labels.forEach(el => el.remove());
     }
@@ -384,11 +376,10 @@
             return;
         }
 
-        // Очищаем старые метки
         clearHighlight(problem);
-
-        // Показываем вопрос
         showProblem(problem);
+
+        // Прокручиваем к вопросу
         scrollToProblem(problem);
 
         const order = question.bruteState.order;
@@ -397,7 +388,6 @@
         console.log(`[QuizNavigator] Начинаем перебор для вопроса: ${question.question}`);
         console.log(`[QuizNavigator] Порядок перебора: ${order.join(', ')}`);
 
-        // Обновляем панель
         updatePanel();
 
         for (let i = 0; i < order.length; i++) {
@@ -407,16 +397,11 @@
 
             console.log(`[QuizNavigator] Проверка варианта ${optionIndex + 1}/${totalOptions}: "${question.options[optionIndex].text}"`);
 
-            // Выбираем вариант
             selectOption(problem, optionIndex);
-
-            // Отправляем на проверку
             submitAnswer(problem);
 
-            // Ждем ответа от сервера
             await new Promise(resolve => setTimeout(resolve, 800));
 
-            // Проверяем результат
             const result = checkResult(problem);
             
             question.bruteState.results.push({
@@ -429,16 +414,13 @@
                 question.bruteState.foundCorrect = true;
                 question.bruteState.correctAnswers.push(optionIndex);
                 
-                // Подсвечиваем правильный ответ
                 problem.classList.add('quiz-navigator-correct');
                 addResultLabel(problem, `✅ Правильный ответ: ${question.options[optionIndex].text}`, true);
                 
                 console.log(`[QuizNavigator] ✅ Найден правильный ответ: вариант ${optionIndex + 1}`);
                 
-                // Обновляем панель
                 updatePanel();
                 
-                // Спрашиваем, продолжать ли перебор
                 const continueBrute = confirm(
                     `Найден правильный ответ!\n\n` +
                     `Вариант ${optionIndex + 1}: "${question.options[optionIndex].text}"\n\n` +
@@ -449,7 +431,6 @@
                     break;
                 }
                 
-                // Очищаем метку для следующей проверки
                 clearHighlight(problem);
                 
             } else if (result === 'incorrect') {
@@ -459,13 +440,11 @@
                 console.log(`[QuizNavigator] ⏳ Результат не определен для варианта ${optionIndex + 1}`);
             }
 
-            // Небольшая задержка между попытками
             await new Promise(resolve => setTimeout(resolve, 500));
         }
 
         question.bruteState.isRunning = false;
         
-        // Финальное обновление
         if (question.bruteState.correctAnswers.length === 0) {
             addResultLabel(problem, '❌ Правильные ответы не найдены', false);
         } else if (question.bruteState.correctAnswers.length > 1) {
@@ -481,11 +460,11 @@
 
     /**
      * ---------------------------------------------------------
-     * 15. Переход к вопросу
+     * 15. Переход к вопросу (видео НЕ останавливается)
      * ---------------------------------------------------------
      */
 
-    async function goToQuestion(index) {
+    async function goToQuestion(index, autoScroll = true) {
         if (index < 0 || index >= questions.length) return;
         
         currentQuestionIndex = index;
@@ -499,23 +478,33 @@
             return;
         }
 
-        const video = getVideoForQuestion(question);
+        // Показываем вопрос в DOM
+        showProblem(problem);
         
+        if (autoScroll) {
+            scrollToProblem(problem);
+        }
+
+        // Перематываем видео без остановки
+        const video = getVideoForQuestion(question);
         if (video) {
             try {
+                // Сохраняем состояние воспроизведения
+                const wasPlaying = !video.paused;
+                
                 await seekVideo(video, question.time);
-                if (CONFIG.pauseBeforeQuestion) {
-                    video.pause();
+                
+                // Восстанавливаем состояние воспроизведения
+                if (wasPlaying && video.paused) {
+                    await video.play().catch(() => {});
                 }
+                
+                console.log(`[QuizNavigator] Видео перемотано на ${question.time} сек. (${wasPlaying ? 'играет' : 'на паузе'})`);
             } catch (error) {
                 console.warn('[QuizNavigator] Ошибка перемотки:', error);
             }
         }
-
-        showProblem(problem);
-        scrollToProblem(problem);
         
-        // Подсветка
         problem.classList.add('quiz-navigator-highlight');
         setTimeout(() => {
             problem.classList.remove('quiz-navigator-highlight');
@@ -558,9 +547,6 @@
             transition: 'all 0.3s ease'
         });
 
-        /**
-         * Заголовок с управлением
-         */
         const header = document.createElement('div');
         header.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;">
@@ -592,16 +578,10 @@
         `;
         panel.appendChild(header);
 
-        /**
-         * Контейнер для содержимого
-         */
         const content = document.createElement('div');
         content.id = 'quiz-nav-content';
         panel.appendChild(content);
 
-        /**
-         * Управление свертыванием
-         */
         let isCollapsed = false;
         header.querySelector('#quiz-nav-collapse').addEventListener('click', () => {
             isCollapsed = !isCollapsed;
@@ -609,16 +589,11 @@
             header.querySelector('#quiz-nav-collapse').textContent = isCollapsed ? '+' : '−';
         });
 
-        /**
-         * Закрытие (скрываем панель, но не удаляем)
-         */
         header.querySelector('#quiz-nav-close').addEventListener('click', () => {
             panel.style.display = 'none';
         });
 
         document.body.appendChild(panel);
-
-        // Обновляем содержимое
         updatePanel();
     }
 
@@ -636,6 +611,25 @@
         if (!content) return;
 
         content.innerHTML = '';
+
+        // Информационная строка
+        const infoBar = document.createElement('div');
+        infoBar.style.cssText = `
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            padding: 6px 10px;
+            background: #16213e;
+            border-radius: 6px;
+            font-size: 11px;
+            color: #888;
+            align-items: center;
+        `;
+        infoBar.innerHTML = `
+            <span>🔄 Видео: <span style="color:#4ade80;">не останавливается</span></span>
+            <span style="margin-left:auto;">⚠️ Переход по кнопке "Перейти"</span>
+        `;
+        content.appendChild(infoBar);
 
         /**
          * Навигационные кнопки
@@ -661,7 +655,7 @@
         `;
         prevBtn.addEventListener('click', () => {
             if (currentQuestionIndex > 0) {
-                goToQuestion(currentQuestionIndex - 1);
+                goToQuestion(currentQuestionIndex - 1, true);
             }
         });
         nav.appendChild(prevBtn);
@@ -679,7 +673,7 @@
         `;
         nextBtn.addEventListener('click', () => {
             if (currentQuestionIndex < questions.length - 1) {
-                goToQuestion(currentQuestionIndex + 1);
+                goToQuestion(currentQuestionIndex + 1, true);
             }
         });
         nav.appendChild(nextBtn);
@@ -702,7 +696,6 @@
                     p.style.removeProperty('display');
                 }
             });
-            alert('Все вопросы показаны');
         });
         nav.appendChild(showAllBtn);
 
@@ -722,7 +715,6 @@
                 background: #16213e;
             `;
 
-            // Информация о вопросе
             const info = document.createElement('div');
             info.style.cssText = `
                 display: flex;
@@ -743,7 +735,6 @@
 
             item.appendChild(info);
 
-            // Текст вопроса
             const title = document.createElement('div');
             title.textContent = q.question;
             title.style.cssText = `
@@ -754,7 +745,6 @@
             `;
             item.appendChild(title);
 
-            // Варианты ответов
             const opts = document.createElement('div');
             opts.style.cssText = `
                 margin-bottom: 8px;
@@ -775,7 +765,6 @@
             });
             item.appendChild(opts);
 
-            // Статус перебора
             const status = document.createElement('div');
             status.style.cssText = `
                 font-size: 11px;
@@ -797,7 +786,6 @@
             }
             item.appendChild(status);
 
-            // Кнопки действий
             const actions = document.createElement('div');
             actions.style.cssText = `
                 display: flex;
@@ -825,6 +813,7 @@
             });
             actions.appendChild(bruteBtn);
 
+            // Кнопка "Перейти" - перематывает видео и показывает вопрос
             const goBtn = document.createElement('button');
             goBtn.textContent = '▶ Перейти';
             goBtn.style.cssText = `
@@ -834,15 +823,35 @@
                 border-radius: 5px;
                 background: #2563eb;
                 color: #fff;
+                font-weight: bold;
             `;
             goBtn.addEventListener('click', () => {
-                goToQuestion(currentQuestionIndex);
+                goToQuestion(currentQuestionIndex, true);
             });
             actions.appendChild(goBtn);
 
-            // Кнопка для показа варианта
+            // Кнопка "Показать" - просто показывает вопрос без перемотки
+            const showBtn = document.createElement('button');
+            showBtn.textContent = '👁 Показать';
+            showBtn.style.cssText = `
+                cursor: pointer;
+                border: 0;
+                padding: 6px 12px;
+                border-radius: 5px;
+                background: #374151;
+                color: #eee;
+            `;
+            showBtn.addEventListener('click', () => {
+                const p = getProblem(q);
+                if (p) {
+                    showProblem(p);
+                    scrollToProblem(p);
+                }
+            });
+            actions.appendChild(showBtn);
+
             const showOptionsBtn = document.createElement('button');
-            showOptionsBtn.textContent = '👁 Показать варианты';
+            showOptionsBtn.textContent = '📋 Варианты';
             showOptionsBtn.style.cssText = `
                 cursor: pointer;
                 border: 0;
@@ -872,12 +881,11 @@
             actions.appendChild(showOptionsBtn);
 
             item.appendChild(actions);
-
             content.appendChild(item);
         }
 
         /**
-         * Список всех вопросов (краткий)
+         * Список всех вопросов
          */
         const allList = document.createElement('div');
         allList.style.cssText = `
@@ -911,7 +919,7 @@
                 background: ${idx === currentQuestionIndex ? 'rgba(255, 217, 61, 0.1)' : 'transparent'};
             `;
             item.addEventListener('click', () => {
-                goToQuestion(idx);
+                goToQuestion(idx, true);
             });
 
             const timeSpan = document.createElement('span');
@@ -924,7 +932,6 @@
             titleSpan.textContent = shortTitle;
             titleSpan.style.cssText = `flex: 1; margin: 0 8px;`;
 
-            // Индикатор статуса
             const statusDot = document.createElement('span');
             if (q.bruteState.correctAnswers.length > 0) {
                 statusDot.textContent = '✅';
@@ -1005,18 +1012,28 @@
 
     /**
      * ---------------------------------------------------------
-     * 20. Запуск
+     * 20. Запуск — ТОЛЬКО СКАНИРОВАНИЕ, без перехода к видео
      * ---------------------------------------------------------
      */
 
-    // Показываем первый вопрос при загрузке
     setTimeout(() => {
         createPanel();
         if (questions.length > 0) {
-            goToQuestion(0);
+            // Просто показываем панель, НЕ переходим к видео
+            console.log('[QuizNavigator] ✅ Скрипт загружен. Найдено вопросов:', questions.length);
+            console.log('[QuizNavigator] ℹ️ Для перехода к вопросу нажмите кнопку "Перейти"');
+            
+            // Показываем первый вопрос в DOM, но НЕ перематываем видео
+            const q = questions[0];
+            const p = getProblem(q);
+            if (p) {
+                showProblem(p);
+                // Не скроллим и не перематываем видео
+            }
+            updatePanel();
         }
     }, 500);
 
-    console.log('[QuizNavigator] ✅ Скрипт загружен');
+    console.log('[QuizNavigator] ✅ Скрипт загружен. Режим: только сканирование, переход по кнопке');
 
 })();
