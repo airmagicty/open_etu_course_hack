@@ -1,5 +1,6 @@
 // ==UserScript==
 // @name         Open edX InVideoQuiz — Question Navigator
+// @author       airmagicty
 // @namespace    https://example.local/
 // @version      1.0.0
 // @description  Поиск вопросов InVideoQuiz и переход/запуск вопросов по времени видео
