@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Open edX InVideoQuiz — Navigator PRO v4 (Multi-Select Support)
+// @name         Open edX InVideoQuiz — Navigator PRO v4.1 (Multi-Select + Debug)
 // @author       airmagicty
 // @namespace    https://example.local/
-// @version      4.0.0
-// @description  Контролируемый перебор вариантов (radio + checkbox) с панелью управления
+// @version      4.1.0
+// @description  Контролируемый перебор вариантов (radio + checkbox) с панелью управления и отладкой
 // @match        *://*/*
 // @grant        none
 // ==/UserScript==
@@ -16,6 +16,19 @@
         videoSearchTimeout: 5000,
         pauseBeforeQuestion: false,
         seekOffset: 0,
+        stopOnFirstCorrect: true, // Останавливать перебор после первой правильной комбинации
+        debug: true,              // Подробное логирование в консоль
+    };
+
+    // ---------------------------------------------------------
+    // Логгер с префиксом
+    // ---------------------------------------------------------
+    const log = {
+        info: (...args) => console.log('%c[QuizNavigator]', 'color:#ffd93d;font-weight:bold', ...args),
+        success: (...args) => console.log('%c[QuizNavigator] ✅ SUCCESS', 'color:#4ade80;font-weight:bold', ...args),
+        fail: (...args) => console.log('%c[QuizNavigator] ❌ FAIL', 'color:#f87171;font-weight:bold', ...args),
+        warn: (...args) => console.warn('%c[QuizNavigator] ⚠️', 'color:#fbbf24;font-weight:bold', ...args),
+        debug: (...args) => { if (CONFIG.debug) console.log('%c[QuizNavigator] 🐛', 'color:#60a5fa', ...args); },
     };
 
     const config = window.InVideoQuizXBlock?.config;
@@ -28,17 +41,15 @@
     const questions = [];
     let currentQuestionIndex = 0;
 
-    /**
-     * ---------------------------------------------------------
-     * 2. Извлекаем вопросы и определяем их тип
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Извлекаем вопросы и определяем их тип
+    // ---------------------------------------------------------
 
     for (const [videoId, markers] of Object.entries(config)) {
         for (const [time, problemId] of Object.entries(markers)) {
             const problem = document.querySelector(`[data-problem-id*="${problemId}"]`);
             if (!problem) {
-                console.warn(`[QuizNavigator] Не найден problem ${problemId}`);
+                log.warn(`Не найден problem ${problemId}`);
                 continue;
             }
 
@@ -75,11 +86,10 @@
                 questionType: questionType,
                 bruteState: {
                     isRunning: false,
-                    currentCombination: [],
                     results: [],
                     foundCorrect: false,
                     correctCombinations: [],
-                    allCombinations: [], // Для checkbox
+                    allCombinations: [],
                 }
             });
         }
@@ -92,9 +102,7 @@
         if (q.questionType === 'checkbox') {
             const n = q.options.length;
             const combinations = [];
-            // Генерируем комбинации, начиная с самых коротких (1 элемент, 2 элемента, ...)
             for (let k = 1; k <= n; k++) {
-                const combo = [];
                 const generate = (start, current) => {
                     if (current.length === k) {
                         combinations.push([...current]);
@@ -109,16 +117,16 @@
                 generate(0, []);
             }
             q.bruteState.allCombinations = combinations;
+            log.debug(`Вопрос "${q.question}" (checkbox): сгенерировано ${combinations.length} комбинаций`);
         }
     });
 
-    console.log('[QuizNavigator] Найдено вопросов:', questions);
+    log.info('Найдено вопросов:', questions.length);
+    questions.forEach((q, i) => log.debug(`  ${i + 1}. [${q.questionType}] ${q.question} (${q.options.length} опций)`));
 
-    /**
-     * ---------------------------------------------------------
-     * 3-6. Вспомогательные функции (без изменений)
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Вспомогательные функции
+    // ---------------------------------------------------------
 
     function getVideoElements() {
         return [...document.querySelectorAll('video')];
@@ -163,38 +171,25 @@
 
     function seekVideo(video, time) {
         return new Promise((resolve, reject) => {
-            if (!video) {
-                reject(new Error('Видео не найдено'));
-                return;
-            }
+            if (!video) { reject(new Error('Видео не найдено')); return; }
             const targetTime = Math.max(0, time + CONFIG.seekOffset);
             if (video.readyState < 1) {
                 const handler = () => {
                     video.removeEventListener('loadedmetadata', handler);
-                    try {
-                        video.currentTime = targetTime;
-                        resolve(video);
-                    } catch (error) {
-                        reject(error);
-                    }
+                    try { video.currentTime = targetTime; resolve(video); }
+                    catch (error) { reject(error); }
                 };
                 video.addEventListener('loadedmetadata', handler);
                 return;
             }
-            try {
-                video.currentTime = targetTime;
-                resolve(video);
-            } catch (error) {
-                reject(error);
-            }
+            try { video.currentTime = targetTime; resolve(video); }
+            catch (error) { reject(error); }
         });
     }
 
-    /**
-     * ---------------------------------------------------------
-     * 9. Выбор вариантов (обновлено для checkbox)
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Выбор вариантов
+    // ---------------------------------------------------------
 
     function selectOption(problem, optionIndex) {
         const inputs = problem.querySelectorAll('input[type="radio"]');
@@ -209,14 +204,12 @@
 
     function selectCombination(problem, indices) {
         const inputs = problem.querySelectorAll('input[type="checkbox"]');
-        // Сначала снимаем все галочки
         inputs.forEach(input => {
             if (input.checked) {
                 input.checked = false;
                 input.dispatchEvent(new Event('change', { bubbles: true }));
             }
         });
-        // Затем ставим нужные
         indices.forEach(index => {
             if (inputs[index]) {
                 inputs[index].checked = true;
@@ -241,12 +234,6 @@
         const incorrect = problem.querySelector('.status.incorrect, .incorrect, .is-incorrect');
         if (correct) return 'correct';
         if (incorrect) return 'incorrect';
-        const feedback = problem.querySelector('.submission-feedback, .notification');
-        if (feedback) {
-            const text = feedback.textContent.toLowerCase();
-            if (text.includes('correct') || text.includes('верно') || text.includes('правильно')) return 'correct';
-            if (text.includes('incorrect') || text.includes('неверно') || text.includes('неправильно')) return 'incorrect';
-        }
         return 'unknown';
     }
 
@@ -254,33 +241,60 @@
         if (!problem) return;
         problem.classList.remove('quiz-navigator-highlight', 'quiz-navigator-correct', 'quiz-navigator-incorrect');
         problem.querySelectorAll('.quiz-navigator-label').forEach(el => el.remove());
+        // Также снимаем подсветку с лейблов опций
+        problem.querySelectorAll('label').forEach(lbl => {
+            lbl.style.removeProperty('background');
+            lbl.style.removeProperty('border-left');
+            lbl.style.removeProperty('padding-left');
+        });
     }
 
-    function addResultLabel(problem, text, isCorrect) {
+    function addResultLabel(problem, html, isCorrect) {
         const label = document.createElement('div');
         label.className = 'quiz-navigator-label';
         label.style.cssText = `
-            margin-top: 8px;
-            padding: 8px 12px;
-            border-radius: 4px;
+            margin-top: 12px;
+            padding: 10px 14px;
+            border-radius: 6px;
             font-weight: bold;
             font-size: 14px;
             background: ${isCorrect ? 'rgba(34, 197, 94, 0.15)' : 'rgba(239, 68, 68, 0.15)'};
             border-left: 4px solid ${isCorrect ? '#22c55e' : '#ef4444'};
-            color: ${isCorrect ? '#22c55e' : '#ef4444'};
+            color: ${isCorrect ? '#4ade80' : '#f87171'};
+            white-space: pre-line;
         `;
-        label.textContent = text;
+        label.innerHTML = html;
         problem.appendChild(label);
     }
 
     /**
-     * ---------------------------------------------------------
-     * 14. Перебор вариантов (обновлено для checkbox)
-     * ---------------------------------------------------------
+     * Подсветить правильные варианты в самом вопросе
      */
+    function highlightCorrectOptions(problem, question, indices) {
+        const selector = question.questionType === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]';
+        const inputs = problem.querySelectorAll(selector);
+        indices.forEach(idx => {
+            const input = inputs[idx];
+            if (!input) return;
+            const label = problem.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+            if (label) {
+                label.style.background = 'rgba(34, 197, 94, 0.25)';
+                label.style.borderLeft = '4px solid #22c55e';
+                label.style.paddingLeft = '8px';
+                label.style.borderRadius = '4px';
+            }
+        });
+    }
+
+    // ---------------------------------------------------------
+    // Перебор вариантов
+    // ---------------------------------------------------------
 
     async function bruteForceQuestion(question) {
-        if (question.bruteState.isRunning) return;
+        if (question.bruteState.isRunning) {
+            log.warn('Перебор уже выполняется для этого вопроса');
+            return;
+        }
 
         question.bruteState.isRunning = true;
         question.bruteState.results = [];
@@ -289,6 +303,7 @@
 
         const problem = getProblem(question);
         if (!problem) {
+            log.fail('Problem не найден в DOM');
             question.bruteState.isRunning = false;
             return;
         }
@@ -298,79 +313,122 @@
         scrollToProblem(problem);
         updatePanel();
 
-        if (question.questionType === 'radio') {
-            // --- Логика для RADIO (одиночный выбор) ---
-            const order = question.options.map((_, i) => i); // Простой порядок 0,1,2...
-            // Можно добавить кастомный порядок, как в предыдущей версии, если нужно
-            // const order = [1, 0, 2, 3, ...];
+        log.info(`━━━ Начинаем перебор ━━━`);
+        log.info(`Вопрос: "${question.question}"`);
+        log.info(`Тип: ${question.questionType}, опций: ${question.options.length}`);
 
-            for (let i = 0; i < order.length; i++) {
-                const optionIndex = order[i];
-                console.log(`[QuizNavigator] Проверка варианта ${optionIndex + 1}/${question.options.length}`);
-                
-                selectOption(problem, optionIndex);
+        if (question.questionType === 'radio') {
+            // --- RADIO ---
+            const total = question.options.length;
+            for (let i = 0; i < total; i++) {
+                log.info(`Проверка варианта ${i + 1}/${total}: "${question.options[i].text}"`);
+
+                selectOption(problem, i);
                 submitAnswer(problem);
-                await new Promise(resolve => setTimeout(resolve, 800));
+                await new Promise(r => setTimeout(r, 900));
 
                 const result = checkResult(problem);
-                question.bruteState.results.push({ optionIndex, result });
+                question.bruteState.results.push({ optionIndex: i, result });
 
                 if (result === 'correct') {
+                    log.success(`Вариант ${i + 1} — ПРАВИЛЬНЫЙ!`);
                     question.bruteState.foundCorrect = true;
-                    question.bruteState.correctCombinations.push([optionIndex]);
+                    question.bruteState.correctCombinations.push([i]);
                     problem.classList.add('quiz-navigator-correct');
-                    addResultLabel(problem, `✅ Правильный ответ: ${question.options[optionIndex].text}`, true);
-                    break; // Для radio нашли один правильный - стоп
+                    highlightCorrectOptions(problem, question, [i]);
+                    addResultLabel(
+                        problem,
+                        `✅ ПРАВИЛЬНЫЙ ОТВЕТ: вариант ${i + 1}\n${question.options[i].text}`,
+                        true
+                    );
+                    if (CONFIG.stopOnFirstCorrect) {
+                        log.info('Останавливаем перебор (найден правильный ответ)');
+                        break;
+                    }
                 } else if (result === 'incorrect') {
-                    problem.classList.add('quiz-navigator-incorrect');
+                    log.fail(`Вариант ${i + 1} — неправильный`);
+                } else {
+                    log.warn(`Вариант ${i + 1} — результат не определён`);
                 }
-                await new Promise(resolve => setTimeout(resolve, 500));
+
+                await new Promise(r => setTimeout(r, 400));
             }
+
         } else if (question.questionType === 'checkbox') {
-            // --- Логика для CHECKBOX (множественный выбор) ---
+            // --- CHECKBOX ---
             const combinations = question.bruteState.allCombinations;
-            console.log(`[QuizNavigator] Всего комбинаций для перебора: ${combinations.length}`);
+            log.info(`Всего комбинаций: ${combinations.length}`);
 
             for (let i = 0; i < combinations.length; i++) {
                 const combo = combinations[i];
-                console.log(`[QuizNavigator] Проверка комбинации ${i + 1}/${combinations.length}: [${combo.join(', ')}]`);
+                const comboText = combo.map(idx => `"${question.options[idx].text}"`).join(' + ');
+                log.info(`Проверка комбинации ${i + 1}/${combinations.length}: [${combo.join(',')}] → ${comboText}`);
 
                 selectCombination(problem, combo);
                 submitAnswer(problem);
-                await new Promise(resolve => setTimeout(resolve, 800));
+                await new Promise(r => setTimeout(r, 900));
 
                 const result = checkResult(problem);
                 question.bruteState.results.push({ combination: combo, result });
 
                 if (result === 'correct') {
+                    log.success(`Комбинация [${combo.join(',')}] — ПРАВИЛЬНАЯ! ${comboText}`);
                     question.bruteState.foundCorrect = true;
                     question.bruteState.correctCombinations.push(combo);
-                    problem.classList.add('quiz-navigator-correct');
-                    const texts = combo.map(idx => question.options[idx].text).join(', ');
-                    addResultLabel(problem, `✅ Правильный ответ: ${texts}`, true);
-                    // Не прерываемся, чтобы найти все возможные правильные комбинации
+                    // Не подсвечиваем сразу, чтобы не сбрасывать при следующей отправке
+                    if (CONFIG.stopOnFirstCorrect) {
+                        log.info('Останавливаем перебор (найдена правильная комбинация)');
+                        break;
+                    }
                 } else if (result === 'incorrect') {
-                    problem.classList.add('quiz-navigator-incorrect');
+                    log.fail(`Комбинация [${combo.join(',')}] — неправильная`);
+                } else {
+                    log.warn(`Комбинация [${combo.join(',')}] — результат не определён`);
                 }
-                await new Promise(resolve => setTimeout(resolve, 500));
+
+                await new Promise(r => setTimeout(r, 400));
             }
         }
 
-        question.bruteState.isRunning = false;
-        
-        if (question.bruteState.correctCombinations.length === 0) {
-            addResultLabel(problem, '❌ Правильные ответы не найдены', false);
+        // ─── Финальная подсветка результата ───
+        clearHighlight(problem);
+
+        if (question.bruteState.correctCombinations.length > 0) {
+            // Восстанавливаем правильную комбинацию в UI
+            const bestCombo = question.bruteState.correctCombinations[0];
+            if (question.questionType === 'radio') {
+                selectOption(problem, bestCombo[0]);
+            } else {
+                selectCombination(problem, bestCombo);
+            }
+            submitAnswer(problem);
+            await new Promise(r => setTimeout(r, 900));
+
+            problem.classList.add('quiz-navigator-correct');
+            highlightCorrectOptions(problem, question, bestCombo);
+
+            const answersText = bestCombo
+                .map(idx => `• вариант ${idx + 1}: ${question.options[idx].text}`)
+                .join('\n');
+            addResultLabel(
+                problem,
+                `✅ НАЙДЕН ПРАВИЛЬНЫЙ ОТВЕТ:\n${answersText}\n\nВсего правильных комбинаций: ${question.bruteState.correctCombinations.length}`,
+                true
+            );
+            log.success(`━━━ ИТОГ: найдено ${question.bruteState.correctCombinations.length} правильных комбинаций ━━━`);
+        } else {
+            problem.classList.add('quiz-navigator-incorrect');
+            addResultLabel(problem, '❌ Правильные ответы НЕ найдены', false);
+            log.fail(`━━━ ИТОГ: правильные ответы не найдены (проверено ${question.bruteState.results.length} вариантов) ━━━`);
         }
 
-        console.log(`[QuizNavigator] Перебор завершен. Найдено правильных комбинаций: ${question.bruteState.correctCombinations.length}`);
+        question.bruteState.isRunning = false;
         updatePanel();
     }
 
-    /**
-     * ---------------------------------------------------------
-     * 15. Переход к вопросу
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Переход к вопросу
+    // ---------------------------------------------------------
 
     async function goToQuestion(index, autoScroll = true) {
         if (index < 0 || index >= questions.length) return;
@@ -393,7 +451,7 @@
                     await video.play().catch(() => {});
                 }
             } catch (error) {
-                console.warn('[QuizNavigator] Ошибка перемотки:', error);
+                log.warn('Ошибка перемотки:', error);
             }
         }
         problem.classList.add('quiz-navigator-highlight');
@@ -401,11 +459,9 @@
         updatePanel();
     }
 
-    /**
-     * ---------------------------------------------------------
-     * 16. Создание панели
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Создание панели
+    // ---------------------------------------------------------
 
     function createPanel() {
         const oldPanel = document.getElementById(CONFIG.panelId);
@@ -453,11 +509,9 @@
         updatePanel();
     }
 
-    /**
-     * ---------------------------------------------------------
-     * 17. Обновление панели (обновлено)
-     * ---------------------------------------------------------
-     */
+    // ---------------------------------------------------------
+    // Обновление панели
+    // ---------------------------------------------------------
 
     function updatePanel() {
         const panel = document.getElementById(CONFIG.panelId);
@@ -469,12 +523,12 @@
 
         const infoBar = document.createElement('div');
         infoBar.style.cssText = `display: flex; gap: 8px; margin-bottom: 10px; padding: 6px 10px; background: #16213e; border-radius: 6px; font-size: 11px; color: #888; align-items: center;`;
-        infoBar.innerHTML = `<span>🔄 Видео: <span style="color:#4ade80;">не останавливается</span></span><span style="margin-left:auto;">⚠️ Переход по кнопке "Перейти"</span>`;
+        infoBar.innerHTML = `<span>🔄 Видео не останавливается</span><span style="margin-left:auto;">Стоп после 1-го успеха: <b style="color:#4ade80;">${CONFIG.stopOnFirstCorrect ? 'ДА' : 'НЕТ'}</b></span>`;
         content.appendChild(infoBar);
 
         const nav = document.createElement('div');
         nav.style.cssText = `display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;`;
-        
+
         const prevBtn = document.createElement('button');
         prevBtn.textContent = '◀ Предыдущий';
         prevBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
@@ -487,16 +541,20 @@
         nextBtn.addEventListener('click', () => { if (currentQuestionIndex < questions.length - 1) goToQuestion(currentQuestionIndex + 1, true); });
         nav.appendChild(nextBtn);
 
-        const showAllBtn = document.createElement('button');
-        showAllBtn.textContent = '📋 Все вопросы';
-        showAllBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #374151; color: #eee;`;
-        showAllBtn.addEventListener('click', () => {
-            questions.forEach(q => {
-                const p = getProblem(q);
-                if (p) { p.hidden = false; p.style.removeProperty('display'); }
-            });
+        const clearBtn = document.createElement('button');
+        clearBtn.textContent = '🧹 Сброс';
+        clearBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #374151; color: #eee;`;
+        clearBtn.addEventListener('click', () => {
+            const q = questions[currentQuestionIndex];
+            const p = getProblem(q);
+            if (p) clearHighlight(p);
+            q.bruteState.results = [];
+            q.bruteState.correctCombinations = [];
+            q.bruteState.foundCorrect = false;
+            updatePanel();
         });
-        nav.appendChild(showAllBtn);
+        nav.appendChild(clearBtn);
+
         content.appendChild(nav);
 
         if (questions.length > 0) {
@@ -507,7 +565,8 @@
             const info = document.createElement('div');
             info.style.cssText = `display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;`;
             const timeLabel = document.createElement('span');
-            timeLabel.textContent = `⏱ ${formatTime(q.time)} [${q.questionType.toUpperCase()}]`;
+            const typeColor = q.questionType === 'checkbox' ? '#a78bfa' : '#60a5fa';
+            timeLabel.innerHTML = `⏱ ${formatTime(q.time)} <span style="color:${typeColor};font-size:11px;">[${q.questionType.toUpperCase()}]</span>`;
             timeLabel.style.cssText = `color: #ffd93d; font-weight: bold;`;
             info.appendChild(timeLabel);
             const indexLabel = document.createElement('span');
@@ -521,30 +580,38 @@
             title.style.cssText = `font-weight: bold; color: #fff; margin-bottom: 8px; font-size: 14px;`;
             item.appendChild(title);
 
+            // Список опций с отметкой правильных
             const opts = document.createElement('div');
             opts.style.cssText = `margin-bottom: 8px; font-size: 12px; color: #ccc;`;
+            const correctIndices = q.bruteState.correctCombinations.length > 0
+                ? q.bruteState.correctCombinations[0]
+                : [];
             q.options.forEach((opt, idx) => {
                 const optDiv = document.createElement('div');
-                optDiv.textContent = `${idx + 1}. ${opt.text}`;
-                optDiv.style.cssText = `padding: 2px 0; color: #ccc;`;
+                const isCorrect = correctIndices.includes(idx);
+                optDiv.textContent = `${isCorrect ? '✅' : '⬜'} ${idx + 1}. ${opt.text}`;
+                optDiv.style.cssText = `padding: 3px 6px; color: ${isCorrect ? '#4ade80' : '#ccc'}; ${isCorrect ? 'background: rgba(34,197,94,0.1); border-radius:3px;' : ''}`;
                 opts.appendChild(optDiv);
             });
             item.appendChild(opts);
 
             const status = document.createElement('div');
-            status.style.cssText = `font-size: 11px; color: #888; margin-bottom: 6px;`;
-            
+            status.style.cssText = `font-size: 12px; margin-bottom: 8px; padding: 6px 8px; border-radius: 4px;`;
             if (q.bruteState.isRunning) {
-                status.textContent = '⏳ Перебор выполняется...';
+                status.textContent = `⏳ Перебор выполняется... (${q.bruteState.results.length} проверено)`;
+                status.style.background = 'rgba(255, 217, 61, 0.15)';
                 status.style.color = '#ffd93d';
             } else if (q.bruteState.foundCorrect) {
-                status.textContent = `✅ Найдено правильных комбинаций: ${q.bruteState.correctCombinations.length}`;
+                status.textContent = `✅ УСПЕХ: найдено ${q.bruteState.correctCombinations.length} правильных комбинаций (проверено ${q.bruteState.results.length})`;
+                status.style.background = 'rgba(34, 197, 94, 0.15)';
                 status.style.color = '#4ade80';
             } else if (q.bruteState.results.length > 0) {
-                status.textContent = `❌ Перебор завершен. Правильных ответов не найдено`;
+                status.textContent = `❌ НЕУДАЧА: правильных ответов не найдено (проверено ${q.bruteState.results.length})`;
+                status.style.background = 'rgba(239, 68, 68, 0.15)';
                 status.style.color = '#f87171';
             } else {
                 status.textContent = '⏳ Ожидает перебора';
+                status.style.color = '#888';
             }
             item.appendChild(status);
 
@@ -632,15 +699,12 @@
     setTimeout(() => {
         createPanel();
         if (questions.length > 0) {
-            console.log('[QuizNavigator] ✅ Скрипт загружен. Найдено вопросов:', questions.length);
-            console.log('[QuizNavigator] ℹ️ Для перехода к вопросу нажмите кнопку "Перейти"');
+            log.success(`Скрипт загружен. Найдено вопросов: ${questions.length}`);
             const q = questions[0];
             const p = getProblem(q);
             if (p) showProblem(p);
             updatePanel();
         }
     }, 500);
-
-    console.log('[QuizNavigator] ✅ Скрипт загружен. Режим: только сканирование, переход по кнопке');
 
 })();
