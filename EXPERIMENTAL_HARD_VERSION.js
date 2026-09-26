@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Open edX InVideoQuiz — Navigator PRO v4.5 (Multi-Select + Debug + Collapsible)
+// @name         Open edX InVideoQuiz — Navigator PRO v4.6 (Multi-Select + Debug + Collapsible + Final Jump)
 // @author       airmagicty
 // @namespace    https://example.local/
-// @version      4.5.0
-// @description  Контролируемый перебор вариантов (radio + checkbox) с компактной сворачиваемой панелью и блокировкой "След" на последнем вопросе
+// @version      4.6.0
+// @description  Контролируемый перебор вариантов (radio + checkbox) с компактной сворачиваемой панелью, блокировкой "След" на последнем вопросе и финальным переходом на предпоследнюю секунду видео
 // @match        *://*/*
 // @grant        none
 // ==/UserScript==
@@ -18,6 +18,8 @@
         seekOffset: 0,
         stopOnFirstCorrect: true,
         debug: true,
+        // За сколько секунд до конца видео прыгать при "Финале"
+        finalJumpSeconds: 2,
     };
 
     const log = {
@@ -37,6 +39,9 @@
 
     const questions = [];
     let currentQuestionIndex = 0;
+
+    // Новое состояние: мы уже выполнили "финальный" прыжок к концу видео
+    let isAtVideoEnd = false;
 
     // ---------------------------------------------------------
     // Извлекаем вопросы и определяем их тип
@@ -472,7 +477,7 @@
             const nextGlobal = currentQuestionIndex + 1;
             if (nextGlobal < questions.length) return nextGlobal;
 
-            return -1; // на последнем — никуда не идём
+            return -1;
         }
 
         const previousSameVideo = [...sameVideoIndices]
@@ -486,14 +491,50 @@
         return 0;
     }
 
+    // ─── Финальный прыжок к концу видео ───
+    async function jumpToVideoEnd() {
+        const q = questions[currentQuestionIndex];
+        if (!q) return;
+        const video = getVideoForQuestion(q);
+        if (!video) {
+            log.warn('Не найдено видео для финального прыжка');
+            return;
+        }
+        const jumpSeconds = Number.isFinite(CONFIG.finalJumpSeconds) ? CONFIG.finalJumpSeconds : 2;
+        let target = 0;
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+            target = Math.max(0, video.duration - jumpSeconds);
+        } else {
+            target = 0;
+        }
+        try {
+            const wasPlaying = !video.paused;
+            video.currentTime = target;
+            if (wasPlaying && video.paused) {
+                await video.play().catch(() => {});
+            }
+            log.info(`Финальный прыжок: currentTime = ${target.toFixed(2)}s (duration = ${video.duration})`);
+        } catch (e) {
+            log.warn('Ошибка финального прыжка:', e);
+        }
+        isAtVideoEnd = true;
+        updatePanel();
+    }
+
     function navigateRelative(direction, autoScroll = true) {
         if (direction < 0 && isAtFirstQuestion()) {
             goToQuestion(0, autoScroll);
             return;
         }
-        if (direction > 0 && isAtLastQuestion()) {
-            // На последнем — кнопка заблокирована, но на всякий случай не двигаемся.
-            return;
+
+        if (direction > 0) {
+            // На последнем вопросе: если ещё не финализировали — прыгаем к концу видео.
+            if (isAtLastQuestion()) {
+                if (!isAtVideoEnd) {
+                    jumpToVideoEnd();
+                }
+                return;
+            }
         }
 
         const index = getRelativeQuestionIndex(direction);
@@ -507,6 +548,9 @@
     async function goToQuestion(index, autoScroll = true) {
         if (index < 0 || index >= questions.length) return;
         currentQuestionIndex = index;
+        // Сброс финального состояния при любом переходе
+        isAtVideoEnd = false;
+
         const question = questions[index];
         const problem = getProblem(question);
         if (!problem) {
@@ -645,23 +689,30 @@
             compactPrev.disabled = false;
         }
 
-        // ── Компактная кнопка "Следующий" ──
+        // ── Компактная кнопка "Следующий" / "Финал" / "Конец" ──
         const compactNext = document.getElementById('quiz-nav-compact-next');
         if (compactNext) {
-            if (atLast) {
-                compactNext.textContent = '⏭ Конец';
-                compactNext.title = 'Вы на последнем вопросе';
-                compactNext.style.background = '#374151';
-                compactNext.style.cursor = 'default';
-                compactNext.style.opacity = '0.6';
-                compactNext.disabled = true;
-            } else {
+            if (!atLast) {
                 compactNext.textContent = 'След ▶';
                 compactNext.title = 'Следующий вопрос';
                 compactNext.style.background = '#2d2d44';
                 compactNext.style.cursor = 'pointer';
                 compactNext.style.opacity = '1';
                 compactNext.disabled = false;
+            } else if (!isAtVideoEnd) {
+                compactNext.textContent = '⏭ Финал';
+                compactNext.title = 'Перейти к концу видео (предпоследняя секунда)';
+                compactNext.style.background = '#0ea5e9';
+                compactNext.style.cursor = 'pointer';
+                compactNext.style.opacity = '1';
+                compactNext.disabled = false;
+            } else {
+                compactNext.textContent = '⏭ Конец';
+                compactNext.title = 'Видео завершено';
+                compactNext.style.background = '#374151';
+                compactNext.style.cursor = 'default';
+                compactNext.style.opacity = '0.6';
+                compactNext.disabled = true;
             }
         }
 
@@ -672,23 +723,30 @@
             fullPrev.title = atFirst ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
         }
 
-        // ── Полная кнопка "Следующий" ──
+        // ── Полная кнопка "Следующий" / "Финал" / "Конец" ──
         const fullNext = document.getElementById('quiz-nav-full-next');
         if (fullNext) {
-            if (atLast) {
-                fullNext.textContent = '⏭ Конец';
-                fullNext.title = 'Вы на последнем вопросе';
-                fullNext.disabled = true;
-                fullNext.style.cursor = 'default';
-                fullNext.style.opacity = '0.6';
-                fullNext.style.background = '#374151';
-            } else {
+            if (!atLast) {
                 fullNext.textContent = 'Следующий ▶';
                 fullNext.title = 'Следующий вопрос';
                 fullNext.disabled = false;
                 fullNext.style.cursor = 'pointer';
                 fullNext.style.opacity = '1';
                 fullNext.style.background = '#2d2d44';
+            } else if (!isAtVideoEnd) {
+                fullNext.textContent = '⏭ Финал';
+                fullNext.title = 'Перейти к концу видео (предпоследняя секунда)';
+                fullNext.disabled = false;
+                fullNext.style.cursor = 'pointer';
+                fullNext.style.opacity = '1';
+                fullNext.style.background = '#0ea5e9';
+            } else {
+                fullNext.textContent = '⏭ Конец';
+                fullNext.title = 'Видео завершено';
+                fullNext.disabled = true;
+                fullNext.style.cursor = 'default';
+                fullNext.style.opacity = '0.6';
+                fullNext.style.background = '#374151';
             }
         }
     }
@@ -723,9 +781,19 @@
 
         const nextBtn = document.createElement('button');
         nextBtn.id = 'quiz-nav-full-next';
-        nextBtn.textContent = isAtLastQuestion() ? '⏭ Конец' : 'Следующий ▶';
-        nextBtn.disabled = isAtLastQuestion();
-        nextBtn.style.cssText = `cursor: ${isAtLastQuestion() ? 'default' : 'pointer'}; border: 0; padding: 6px 12px; border-radius: 5px; background: ${isAtLastQuestion() ? '#374151' : '#2d2d44'}; color: #eee; font-weight: bold; opacity: ${isAtLastQuestion() ? '0.6' : '1'};`;
+        if (!isAtLastQuestion()) {
+            nextBtn.textContent = 'Следующий ▶';
+            nextBtn.disabled = false;
+            nextBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
+        } else if (!isAtVideoEnd) {
+            nextBtn.textContent = '⏭ Финал';
+            nextBtn.disabled = false;
+            nextBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #0ea5e9; color: #fff; font-weight: bold;`;
+        } else {
+            nextBtn.textContent = '⏭ Конец';
+            nextBtn.disabled = true;
+            nextBtn.style.cssText = `cursor: default; border: 0; padding: 6px 12px; border-radius: 5px; background: #374151; color: #eee; font-weight: bold; opacity: 0.6;`;
+        }
         nextBtn.addEventListener('click', () => navigateRelative(1, true));
         nav.appendChild(nextBtn);
 
