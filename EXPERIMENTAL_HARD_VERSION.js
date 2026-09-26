@@ -42,8 +42,9 @@
     // Извлекаем вопросы и определяем их тип
     // ---------------------------------------------------------
 
-    for (const [videoId, markers] of Object.entries(config)) {
-        for (const [time, problemId] of Object.entries(markers)) {
+    for (const [videoOrder, [videoId, markers]] of Array.from(Object.entries(config).entries())) {
+        // Сохраняем порядок видео и маркеров из config, чтобы навигация была последовательной.
+        for (const [markerOrder, [time, problemId]] of Array.from(Object.entries(markers).entries())) {
             const problem = document.querySelector(`[data-problem-id*="${problemId}"]`);
             if (!problem) {
                 log.warn(`Не найден problem ${problemId}`);
@@ -75,6 +76,8 @@
 
             questions.push({
                 videoId,
+                videoOrder: Number(videoOrder),
+                markerOrder: Number(markerOrder),
                 time: Number(time),
                 problemId,
                 question: legend?.textContent.trim() || 'Без названия',
@@ -93,7 +96,11 @@
         }
     }
 
-    questions.sort((a, b) => a.time - b.time);
+    questions.sort((a, b) => {
+        if (a.videoOrder !== b.videoOrder) return a.videoOrder - b.videoOrder;
+        if (a.time !== b.time) return a.time - b.time;
+        return a.markerOrder - b.markerOrder;
+    });
 
     // Генерируем комбинации для checkbox-вопросов
     questions.forEach(q => {
@@ -440,6 +447,63 @@
     }
 
     // ---------------------------------------------------------
+    // Навигация по порядку и времени видео
+    // ---------------------------------------------------------
+
+    function getRelativeQuestionIndex(direction) {
+        if (!questions.length) return -1;
+        if (questions.length === 1) return 0;
+
+        const currentQuestion = questions[currentQuestionIndex] || questions[0];
+        const video = getVideoForQuestion(currentQuestion);
+        const currentTime = video && Number.isFinite(video.currentTime)
+            ? video.currentTime
+            : currentQuestion.time;
+
+        const epsilon = 0.75;
+        const sameVideoIndices = questions
+            .map((q, index) => ({ q, index }))
+            .filter(item => item.q.videoId === currentQuestion.videoId);
+
+        if (direction > 0) {
+            // Ищем именно следующий маркер после текущей позиции видео.
+            const nextSameVideo = sameVideoIndices.find(item => item.q.time > currentTime + epsilon);
+            if (nextSameVideo) return nextSameVideo.index;
+
+            // Если в этом видео вопросов больше нет — идём дальше по общей последовательности.
+            const nextGlobal = currentQuestionIndex + 1;
+            if (nextGlobal < questions.length) return nextGlobal;
+
+            // На последнем вопросе по старому запросу возвращаемся к вопросу №2.
+            return 1;
+        }
+
+        // Предыдущий: ищем последний маркер перед текущей позицией видео.
+        const previousSameVideo = [...sameVideoIndices]
+            .reverse()
+            .find(item => item.q.time < currentTime - epsilon);
+        if (previousSameVideo) return previousSameVideo.index;
+
+        // Если это начало текущего видео — используем предыдущий элемент общей последовательности.
+        const previousGlobal = currentQuestionIndex - 1;
+        if (previousGlobal >= 0) return previousGlobal;
+
+        return 0;
+    }
+
+    function navigateRelative(direction, autoScroll = true) {
+        // На первом вопросе кнопка "Пред" работает как явное "К первому":
+        // никаких автоматических переходов при загрузке скрипта не происходит.
+        if (direction < 0 && currentQuestionIndex === 0) {
+            goToQuestion(0, autoScroll);
+            return;
+        }
+
+        const index = getRelativeQuestionIndex(direction);
+        if (index >= 0) goToQuestion(index, autoScroll);
+    }
+
+    // ---------------------------------------------------------
     // Переход к вопросу
     // ---------------------------------------------------------
 
@@ -493,14 +557,26 @@
 
         const header = document.createElement('div');
         header.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;">
-                <div>
-                    <strong style="font-size:16px;color:#ffd93d;">🎯 InVideoQuiz Navigator PRO</strong>
-                    <span style="margin-left:10px;font-size:12px;color:#888;">вопросов: ${questions.length}</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+                    <strong style="font-size:15px;color:#ffd93d;white-space:nowrap;">🎯 Navigator PRO</strong>
+                    <span style="font-size:11px;color:#888;white-space:nowrap;">${questions.length} вопросов</span>
                 </div>
-                <div style="display:flex;gap:6px;">
-                    <button id="quiz-nav-collapse" style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 10px;font-size:14px;">−</button>
-                    <button id="quiz-nav-close" style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 10px;font-size:14px;">×</button>
+
+                <div style="display:flex;align-items:center;gap:5px;">
+                    <div id="quiz-nav-compact-controls" style="display:flex;gap:4px;">
+                        <button id="quiz-nav-compact-prev" title="К первому вопросу"
+                            style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 7px;font-size:11px;font-weight:bold;">◀ К первому</button>
+                        <button id="quiz-nav-compact-next" title="Следующий вопрос"
+                            style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 7px;font-size:11px;font-weight:bold;">След ▶</button>
+                        <button id="quiz-nav-compact-brute" title="Перебор вариантов"
+                            style="cursor:pointer;border:0;background:#dc2626;color:#fff;border-radius:5px;padding:4px 7px;font-size:11px;font-weight:bold;">🔍 Перебор</button>
+                    </div>
+
+                    <button id="quiz-nav-collapse" title="Развернуть панель"
+                        style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 9px;font-size:14px;">+</button>
+                    <button id="quiz-nav-close" title="Закрыть панель"
+                        style="cursor:pointer;border:0;background:#2d2d44;color:#eee;border-radius:5px;padding:4px 9px;font-size:14px;">×</button>
                 </div>
             </div>
         `;
@@ -510,14 +586,46 @@
         content.id = 'quiz-nav-content';
         panel.appendChild(content);
 
-        let isCollapsed = false;
-        header.querySelector('#quiz-nav-collapse').addEventListener('click', () => {
-            isCollapsed = !isCollapsed;
+        // По умолчанию панель компактная.
+        let isCollapsed = true;
+        content.style.display = 'none';
+        panel.style.width = 'auto';
+        panel.style.maxWidth = 'calc(100vw - 40px)';
+        panel.style.padding = '8px 10px';
+
+        const collapseBtn = header.querySelector('#quiz-nav-collapse');
+        const compactControls = header.querySelector('#quiz-nav-compact-controls');
+
+        const updateCollapseState = () => {
             content.style.display = isCollapsed ? 'none' : 'block';
-            header.querySelector('#quiz-nav-collapse').textContent = isCollapsed ? '+' : '−';
+            compactControls.style.display = isCollapsed ? 'flex' : 'none';
+            collapseBtn.textContent = isCollapsed ? '+' : '−';
+            collapseBtn.title = isCollapsed ? 'Развернуть панель' : 'Свернуть панель';
+            panel.style.width = isCollapsed ? 'auto' : '500px';
+            panel.style.padding = isCollapsed ? '8px 10px' : '16px';
+        };
+
+        collapseBtn.addEventListener('click', () => {
+            isCollapsed = !isCollapsed;
+            updateCollapseState();
         });
+
+        header.querySelector('#quiz-nav-compact-prev').addEventListener('click', () => {
+            navigateRelative(-1, true);
+        });
+
+        header.querySelector('#quiz-nav-compact-next').addEventListener('click', () => {
+            navigateRelative(1, true);
+        });
+
+        header.querySelector('#quiz-nav-compact-brute').addEventListener('click', () => {
+            const q = questions[currentQuestionIndex];
+            if (q && !q.bruteState.isRunning) bruteForceQuestion(q);
+        });
+
         header.querySelector('#quiz-nav-close').addEventListener('click', () => panel.style.display = 'none');
 
+        updateCollapseState();
         document.body.appendChild(panel);
         updatePanel();
     }
@@ -526,12 +634,29 @@
     // Обновление панели
     // ---------------------------------------------------------
 
+    function updateNavigationLabels() {
+        const compactPrev = document.getElementById('quiz-nav-compact-prev');
+        if (compactPrev) {
+            const atFirst = currentQuestionIndex === 0;
+            compactPrev.textContent = atFirst ? '◀ К первому' : '◀ Пред';
+            compactPrev.title = atFirst ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
+        }
+
+        const fullPrev = document.getElementById('quiz-nav-full-prev');
+        if (fullPrev) {
+            const atFirst = currentQuestionIndex === 0;
+            fullPrev.textContent = atFirst ? '◀ К первому' : '◀ Предыдущий';
+            fullPrev.title = atFirst ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
+        }
+    }
+
     function updatePanel() {
         const panel = document.getElementById(CONFIG.panelId);
         if (!panel) return;
         const content = panel.querySelector('#quiz-nav-content');
         if (!content) return;
 
+        updateNavigationLabels();
         content.innerHTML = '';
 
         const infoBar = document.createElement('div');
@@ -543,15 +668,17 @@
         nav.style.cssText = `display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;`;
 
         const prevBtn = document.createElement('button');
-        prevBtn.textContent = '◀ Предыдущий';
+        prevBtn.id = 'quiz-nav-full-prev';
+        prevBtn.textContent = currentQuestionIndex === 0 ? '◀ К первому' : '◀ Предыдущий';
+        prevBtn.title = currentQuestionIndex === 0 ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
         prevBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
-        prevBtn.addEventListener('click', () => { if (currentQuestionIndex > 0) goToQuestion(currentQuestionIndex - 1, true); });
+        prevBtn.addEventListener('click', () => navigateRelative(-1, true));
         nav.appendChild(prevBtn);
 
         const nextBtn = document.createElement('button');
         nextBtn.textContent = 'Следующий ▶';
         nextBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
-        nextBtn.addEventListener('click', () => { if (currentQuestionIndex < questions.length - 1) goToQuestion(currentQuestionIndex + 1, true); });
+        nextBtn.addEventListener('click', () => navigateRelative(1, true));
         nav.appendChild(nextBtn);
 
         const clearBtn = document.createElement('button');
@@ -712,9 +839,8 @@
         createPanel();
         if (questions.length > 0) {
             log.success(`Скрипт загружен. Найдено вопросов: ${questions.length}`);
-            const q = questions[0];
-            const p = getProblem(q);
-            if (p) showProblem(p);
+            // Первый вопрос выбран в панели, но ничего автоматически не открываем
+            // и не перематываем: переход выполняется только по кнопке пользователя.
             updatePanel();
         }
     }, 500);
