@@ -2,7 +2,7 @@
 // @name         Open edX InVideoQuiz — Navigator PRO v4.1 (Multi-Select + Debug)
 // @author       airmagicty
 // @namespace    https://example.local/
-// @version      4.1.0
+// @version      4.1.1
 // @description  Контролируемый перебор вариантов (radio + checkbox) с панелью управления и отладкой
 // @match        *://*/*
 // @grant        none
@@ -16,13 +16,10 @@
         videoSearchTimeout: 5000,
         pauseBeforeQuestion: false,
         seekOffset: 0,
-        stopOnFirstCorrect: true, // Останавливать перебор после первой правильной комбинации
-        debug: true,              // Подробное логирование в консоль
+        stopOnFirstCorrect: true,
+        debug: true,
     };
 
-    // ---------------------------------------------------------
-    // Логгер с префиксом
-    // ---------------------------------------------------------
     const log = {
         info: (...args) => console.log('%c[QuizNavigator]', 'color:#ffd93d;font-weight:bold', ...args),
         success: (...args) => console.log('%c[QuizNavigator] ✅ SUCCESS', 'color:#4ade80;font-weight:bold', ...args),
@@ -90,6 +87,7 @@
                     foundCorrect: false,
                     correctCombinations: [],
                     allCombinations: [],
+                    radioOrder: null, // ← порядок обхода для radio
                 }
             });
         }
@@ -118,6 +116,22 @@
             }
             q.bruteState.allCombinations = combinations;
             log.debug(`Вопрос "${q.question}" (checkbox): сгенерировано ${combinations.length} комбинаций`);
+        }
+    });
+
+    // ─── ПРАВКА 1: порядок обхода для radio ───
+    // Начинаем со второго варианта (индекс 1), затем первый (индекс 0),
+    // затем все остальные по порядку: 3, 4, 5, ...
+    // Если вариантов меньше двух — обычный порядок.
+    questions.forEach(q => {
+        if (q.questionType === 'radio') {
+            const n = q.options.length;
+            const order = [];
+            if (n >= 2) order.push(1);      // второй вариант
+            if (n >= 1) order.push(0);      // первый вариант
+            for (let i = 2; i < n; i++) order.push(i); // 3-й, 4-й, ...
+            q.bruteState.radioOrder = order;
+            log.debug(`Вопрос "${q.question}" (radio): порядок обхода = [${order.join(', ')}]`);
         }
     });
 
@@ -241,7 +255,6 @@
         if (!problem) return;
         problem.classList.remove('quiz-navigator-highlight', 'quiz-navigator-correct', 'quiz-navigator-incorrect');
         problem.querySelectorAll('.quiz-navigator-label').forEach(el => el.remove());
-        // Также снимаем подсветку с лейблов опций
         problem.querySelectorAll('label').forEach(lbl => {
             lbl.style.removeProperty('background');
             lbl.style.removeProperty('border-left');
@@ -267,9 +280,6 @@
         problem.appendChild(label);
     }
 
-    /**
-     * Подсветить правильные варианты в самом вопросе
-     */
     function highlightCorrectOptions(problem, question, indices) {
         const selector = question.questionType === 'radio' ? 'input[type="radio"]' : 'input[type="checkbox"]';
         const inputs = problem.querySelectorAll(selector);
@@ -320,8 +330,13 @@
         if (question.questionType === 'radio') {
             // --- RADIO ---
             const total = question.options.length;
-            for (let i = 0; i < total; i++) {
-                log.info(`Проверка варианта ${i + 1}/${total}: "${question.options[i].text}"`);
+            // ─── ПРАВКА 2: обход по заранее подготовленному порядку ───
+            const order = question.bruteState.radioOrder
+                || Array.from({ length: total }, (_, i) => i);
+
+            for (let step = 0; step < order.length; step++) {
+                const i = order[step]; // реальный индекс опции
+                log.info(`Проверка варианта ${i + 1}/${total} (шаг ${step + 1}/${order.length}): "${question.options[i].text}"`);
 
                 selectOption(problem, i);
                 submitAnswer(problem);
@@ -375,7 +390,6 @@
                     log.success(`Комбинация [${combo.join(',')}] — ПРАВИЛЬНАЯ! ${comboText}`);
                     question.bruteState.foundCorrect = true;
                     question.bruteState.correctCombinations.push(combo);
-                    // Не подсвечиваем сразу, чтобы не сбрасывать при следующей отправке
                     if (CONFIG.stopOnFirstCorrect) {
                         log.info('Останавливаем перебор (найдена правильная комбинация)');
                         break;
@@ -394,7 +408,6 @@
         clearHighlight(problem);
 
         if (question.bruteState.correctCombinations.length > 0) {
-            // Восстанавливаем правильную комбинацию в UI
             const bestCombo = question.bruteState.correctCombinations[0];
             if (question.questionType === 'radio') {
                 selectOption(problem, bestCombo[0]);
@@ -580,7 +593,6 @@
             title.style.cssText = `font-weight: bold; color: #fff; margin-bottom: 8px; font-size: 14px;`;
             item.appendChild(title);
 
-            // Список опций с отметкой правильных
             const opts = document.createElement('div');
             opts.style.cssText = `margin-bottom: 8px; font-size: 12px; color: #ccc;`;
             const correctIndices = q.bruteState.correctCombinations.length > 0
