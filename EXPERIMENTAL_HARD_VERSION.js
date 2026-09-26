@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Open edX InVideoQuiz — Navigator PRO v4.1 (Multi-Select + Debug)
+// @name         Open edX InVideoQuiz — Navigator PRO v4.5 (Multi-Select + Debug + Collapsible)
 // @author       airmagicty
 // @namespace    https://example.local/
-// @version      4.1.1
-// @description  Контролируемый перебор вариантов (radio + checkbox) с панелью управления и отладкой
+// @version      4.5.0
+// @description  Контролируемый перебор вариантов (radio + checkbox) с компактной сворачиваемой панелью и блокировкой "След" на последнем вопросе
 // @match        *://*/*
 // @grant        none
 // ==/UserScript==
@@ -43,7 +43,6 @@
     // ---------------------------------------------------------
 
     for (const [videoOrder, [videoId, markers]] of Array.from(Object.entries(config).entries())) {
-        // Сохраняем порядок видео и маркеров из config, чтобы навигация была последовательной.
         for (const [markerOrder, [time, problemId]] of Array.from(Object.entries(markers).entries())) {
             const problem = document.querySelector(`[data-problem-id*="${problemId}"]`);
             if (!problem) {
@@ -90,7 +89,7 @@
                     foundCorrect: false,
                     correctCombinations: [],
                     allCombinations: [],
-                    radioOrder: null, // ← порядок обхода для radio
+                    radioOrder: null,
                 }
             });
         }
@@ -126,17 +125,14 @@
         }
     });
 
-    // ─── ПРАВКА 1: порядок обхода для radio ───
-    // Начинаем со второго варианта (индекс 1), затем первый (индекс 0),
-    // затем все остальные по порядку: 3, 4, 5, ...
-    // Если вариантов меньше двух — обычный порядок.
+    // Порядок обхода для radio: 2-й, 1-й, 3-й, 4-й...
     questions.forEach(q => {
         if (q.questionType === 'radio') {
             const n = q.options.length;
             const order = [];
-            if (n >= 2) order.push(1);      // второй вариант
-            if (n >= 1) order.push(0);      // первый вариант
-            for (let i = 2; i < n; i++) order.push(i); // 3-й, 4-й, ...
+            if (n >= 2) order.push(1);
+            if (n >= 1) order.push(0);
+            for (let i = 2; i < n; i++) order.push(i);
             q.bruteState.radioOrder = order;
             log.debug(`Вопрос "${q.question}" (radio): порядок обхода = [${order.join(', ')}]`);
         }
@@ -335,14 +331,12 @@
         log.info(`Тип: ${question.questionType}, опций: ${question.options.length}`);
 
         if (question.questionType === 'radio') {
-            // --- RADIO ---
             const total = question.options.length;
-            // ─── ПРАВКА 2: обход по заранее подготовленному порядку ───
             const order = question.bruteState.radioOrder
                 || Array.from({ length: total }, (_, i) => i);
 
             for (let step = 0; step < order.length; step++) {
-                const i = order[step]; // реальный индекс опции
+                const i = order[step];
                 log.info(`Проверка варианта ${i + 1}/${total} (шаг ${step + 1}/${order.length}): "${question.options[i].text}"`);
 
                 selectOption(problem, i);
@@ -377,7 +371,6 @@
             }
 
         } else if (question.questionType === 'checkbox') {
-            // --- CHECKBOX ---
             const combinations = question.bruteState.allCombinations;
             log.info(`Всего комбинаций: ${combinations.length}`);
 
@@ -411,7 +404,6 @@
             }
         }
 
-        // ─── Финальная подсветка результата ───
         clearHighlight(problem);
 
         if (question.bruteState.correctCombinations.length > 0) {
@@ -450,6 +442,14 @@
     // Навигация по порядку и времени видео
     // ---------------------------------------------------------
 
+    function isAtLastQuestion() {
+        return currentQuestionIndex >= questions.length - 1;
+    }
+
+    function isAtFirstQuestion() {
+        return currentQuestionIndex <= 0;
+    }
+
     function getRelativeQuestionIndex(direction) {
         if (!questions.length) return -1;
         if (questions.length === 1) return 0;
@@ -466,25 +466,20 @@
             .filter(item => item.q.videoId === currentQuestion.videoId);
 
         if (direction > 0) {
-            // Ищем именно следующий маркер после текущей позиции видео.
             const nextSameVideo = sameVideoIndices.find(item => item.q.time > currentTime + epsilon);
             if (nextSameVideo) return nextSameVideo.index;
 
-            // Если в этом видео вопросов больше нет — идём дальше по общей последовательности.
             const nextGlobal = currentQuestionIndex + 1;
             if (nextGlobal < questions.length) return nextGlobal;
 
-            // На последнем вопросе по старому запросу возвращаемся к вопросу №2.
-            return 1;
+            return -1; // на последнем — никуда не идём
         }
 
-        // Предыдущий: ищем последний маркер перед текущей позицией видео.
         const previousSameVideo = [...sameVideoIndices]
             .reverse()
             .find(item => item.q.time < currentTime - epsilon);
         if (previousSameVideo) return previousSameVideo.index;
 
-        // Если это начало текущего видео — используем предыдущий элемент общей последовательности.
         const previousGlobal = currentQuestionIndex - 1;
         if (previousGlobal >= 0) return previousGlobal;
 
@@ -492,10 +487,12 @@
     }
 
     function navigateRelative(direction, autoScroll = true) {
-        // На первом вопросе кнопка "Пред" работает как явное "К первому":
-        // никаких автоматических переходов при загрузке скрипта не происходит.
-        if (direction < 0 && currentQuestionIndex === 0) {
+        if (direction < 0 && isAtFirstQuestion()) {
             goToQuestion(0, autoScroll);
+            return;
+        }
+        if (direction > 0 && isAtLastQuestion()) {
+            // На последнем — кнопка заблокирована, но на всякий случай не двигаемся.
             return;
         }
 
@@ -586,7 +583,6 @@
         content.id = 'quiz-nav-content';
         panel.appendChild(content);
 
-        // По умолчанию панель компактная.
         let isCollapsed = true;
         content.style.display = 'none';
         panel.style.width = 'auto';
@@ -631,24 +627,75 @@
     }
 
     // ---------------------------------------------------------
-    // Обновление панели
+    // Обновление подписей и доступности кнопок навигации
     // ---------------------------------------------------------
 
     function updateNavigationLabels() {
+        const atFirst = isAtFirstQuestion();
+        const atLast = isAtLastQuestion();
+
+        // ── Компактная кнопка "Предыдущий" ──
         const compactPrev = document.getElementById('quiz-nav-compact-prev');
         if (compactPrev) {
-            const atFirst = currentQuestionIndex === 0;
             compactPrev.textContent = atFirst ? '◀ К первому' : '◀ Пред';
             compactPrev.title = atFirst ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
+            compactPrev.style.background = '#2d2d44';
+            compactPrev.style.cursor = 'pointer';
+            compactPrev.style.opacity = '1';
+            compactPrev.disabled = false;
         }
 
+        // ── Компактная кнопка "Следующий" ──
+        const compactNext = document.getElementById('quiz-nav-compact-next');
+        if (compactNext) {
+            if (atLast) {
+                compactNext.textContent = '⏭ Конец';
+                compactNext.title = 'Вы на последнем вопросе';
+                compactNext.style.background = '#374151';
+                compactNext.style.cursor = 'default';
+                compactNext.style.opacity = '0.6';
+                compactNext.disabled = true;
+            } else {
+                compactNext.textContent = 'След ▶';
+                compactNext.title = 'Следующий вопрос';
+                compactNext.style.background = '#2d2d44';
+                compactNext.style.cursor = 'pointer';
+                compactNext.style.opacity = '1';
+                compactNext.disabled = false;
+            }
+        }
+
+        // ── Полная кнопка "Предыдущий" ──
         const fullPrev = document.getElementById('quiz-nav-full-prev');
         if (fullPrev) {
-            const atFirst = currentQuestionIndex === 0;
             fullPrev.textContent = atFirst ? '◀ К первому' : '◀ Предыдущий';
             fullPrev.title = atFirst ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
         }
+
+        // ── Полная кнопка "Следующий" ──
+        const fullNext = document.getElementById('quiz-nav-full-next');
+        if (fullNext) {
+            if (atLast) {
+                fullNext.textContent = '⏭ Конец';
+                fullNext.title = 'Вы на последнем вопросе';
+                fullNext.disabled = true;
+                fullNext.style.cursor = 'default';
+                fullNext.style.opacity = '0.6';
+                fullNext.style.background = '#374151';
+            } else {
+                fullNext.textContent = 'Следующий ▶';
+                fullNext.title = 'Следующий вопрос';
+                fullNext.disabled = false;
+                fullNext.style.cursor = 'pointer';
+                fullNext.style.opacity = '1';
+                fullNext.style.background = '#2d2d44';
+            }
+        }
     }
+
+    // ---------------------------------------------------------
+    // Обновление панели
+    // ---------------------------------------------------------
 
     function updatePanel() {
         const panel = document.getElementById(CONFIG.panelId);
@@ -669,15 +716,16 @@
 
         const prevBtn = document.createElement('button');
         prevBtn.id = 'quiz-nav-full-prev';
-        prevBtn.textContent = currentQuestionIndex === 0 ? '◀ К первому' : '◀ Предыдущий';
-        prevBtn.title = currentQuestionIndex === 0 ? 'Открыть первый вопрос' : 'Предыдущий вопрос';
+        prevBtn.textContent = isAtFirstQuestion() ? '◀ К первому' : '◀ Предыдущий';
         prevBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
         prevBtn.addEventListener('click', () => navigateRelative(-1, true));
         nav.appendChild(prevBtn);
 
         const nextBtn = document.createElement('button');
-        nextBtn.textContent = 'Следующий ▶';
-        nextBtn.style.cssText = `cursor: pointer; border: 0; padding: 6px 12px; border-radius: 5px; background: #2d2d44; color: #eee; font-weight: bold;`;
+        nextBtn.id = 'quiz-nav-full-next';
+        nextBtn.textContent = isAtLastQuestion() ? '⏭ Конец' : 'Следующий ▶';
+        nextBtn.disabled = isAtLastQuestion();
+        nextBtn.style.cssText = `cursor: ${isAtLastQuestion() ? 'default' : 'pointer'}; border: 0; padding: 6px 12px; border-radius: 5px; background: ${isAtLastQuestion() ? '#374151' : '#2d2d44'}; color: #eee; font-weight: bold; opacity: ${isAtLastQuestion() ? '0.6' : '1'};`;
         nextBtn.addEventListener('click', () => navigateRelative(1, true));
         nav.appendChild(nextBtn);
 
@@ -839,8 +887,6 @@
         createPanel();
         if (questions.length > 0) {
             log.success(`Скрипт загружен. Найдено вопросов: ${questions.length}`);
-            // Первый вопрос выбран в панели, но ничего автоматически не открываем
-            // и не перематываем: переход выполняется только по кнопке пользователя.
             updatePanel();
         }
     }, 500);
